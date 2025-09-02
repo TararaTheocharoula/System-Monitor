@@ -1,4 +1,3 @@
-
 #include "header.h"
 #include "cpu.h"
 #include <SDL2/SDL.h>
@@ -7,6 +6,7 @@
 #include "mem.h"
 #include "process.h"
 #include "fan.h"
+#include <set>
 
 
 // === OpenGL Loader Definitions ===
@@ -59,6 +59,8 @@ void systemWindow(const char *id, ImVec2 size, ImVec2 position)
 
             ImGui::Checkbox("Animate", &pauseGraph);
             ImGui::SliderFloat("Update Rate (sec)", &refreshRate, 0.2f, 1.0f);
+            ImGui::SameLine();
+            ImGui::Text("- FPS: %.1f", 1.0f / refreshRate);
             ImGui::SliderFloat("Y-Axis Scale", &yAxisMax, 10.0f, 200.0f);
 
             double currentTime = ImGui::GetTime();
@@ -171,6 +173,22 @@ void systemWindow(const char *id, ImVec2 size, ImVec2 position)
         ImGui::EndTabBar();
     }
 
+    // Process state breakdown
+    int running = 0, sleeping = 0, stopped = 0, zombie = 0, other = 0;
+    for (const auto& proc : getProcesses()) {
+        char state = proc.state.empty() ? '?' : proc.state[0];
+        switch (state) {
+            case 'R': running++; break;
+            case 'S': sleeping++; break;
+            case 'T': stopped++; break;
+            case 'Z': zombie++; break;
+            default: other++; break;
+        }
+    }
+    int total = running + sleeping + stopped + zombie + other;
+    ImGui::Text("Total number of processes: %d", total);
+    ImGui::Text("Processes: Running: %d, Sleeping: %d, Stopped: %d, Zombie: %d, Other: %d", running, sleeping, stopped, zombie, other);
+
     ImGui::End();
 }
 
@@ -196,28 +214,53 @@ void memoryProcessesWindow(const char *id, ImVec2 size, ImVec2 position)
     ImGui::Text("SWAP Usage: %.2f MB / %.2f MB", stats.usedSwapMB, stats.totalSwapMB);
     ImGui::ProgressBar(swapUsageRatio, ImVec2(-1.0f, 20.0f));
 
+    // === Εμφάνιση Δίσκου ===
+    DiskStats disk = getDiskStats();
+    float diskUsageRatio = (disk.totalGB > 0.0f) ? (disk.usedGB / disk.totalGB) : 0.0f;
+    ImGui::Text("Disk Usage: %.2f GB / %.2f GB", disk.usedGB, disk.totalGB);
+    ImGui::ProgressBar(diskUsageRatio, ImVec2(-1.0f, 20.0f));
+
     ImGui::Separator();
-    ImGui::Text("Processes:");
-
-    // === Πίνακας διεργασιών ===
-    if (ImGui::BeginTable("Process Table", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable)) {
-        ImGui::TableSetupColumn("PID");
-        ImGui::TableSetupColumn("Name");
-        ImGui::TableSetupColumn("State");
-        ImGui::TableSetupColumn("CPU (%)");
-        ImGui::TableSetupColumn("Memory (%)");
-        ImGui::TableHeadersRow();
-
-        for (const auto &proc : getProcesses()) {
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0); ImGui::Text("%d", proc.pid);
-            ImGui::TableSetColumnIndex(1); ImGui::Text("%s", proc.name.c_str());
-            ImGui::TableSetColumnIndex(2); ImGui::Text("%s", proc.state.c_str());
-            ImGui::TableSetColumnIndex(3); ImGui::Text("%.2f", proc.cpuUsage);   // προς το παρόν 0.00
-            ImGui::TableSetColumnIndex(4); ImGui::Text("%.2f", proc.memUsage);   // προς το παρόν 0.00
+    if (ImGui::BeginTabBar("MemProcTabs")) {
+        if (ImGui::BeginTabItem("Processes")) {
+            static char filter[64] = "";
+            ImGui::InputText("Filter", filter, sizeof(filter));
+            static std::set<int> selectedPIDs;
+            // === Πίνακας διεργασιών ===
+            if (ImGui::BeginTable("Process Table", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable)) {
+                ImGui::TableSetupColumn("PID");
+                ImGui::TableSetupColumn("Name");
+                ImGui::TableSetupColumn("State");
+                ImGui::TableSetupColumn("CPU (%)");
+                ImGui::TableSetupColumn("Memory (%)");
+                ImGui::TableHeadersRow();
+                for (const auto &proc : getProcesses()) {
+                    std::string pidStr = std::to_string(proc.pid);
+                    if (filter[0] && proc.name.find(filter) == std::string::npos && pidStr.find(filter) == std::string::npos) continue;
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    bool selected = selectedPIDs.count(proc.pid) > 0;
+                    if (ImGui::Selectable((pidStr + "##row").c_str(), selected, ImGuiSelectableFlags_SpanAllColumns)) {
+                        if (ImGui::GetIO().KeyCtrl) {
+                            if (selected) selectedPIDs.erase(proc.pid);
+                            else selectedPIDs.insert(proc.pid);
+                        } else {
+                            selectedPIDs.clear();
+                            selectedPIDs.insert(proc.pid);
+                        }
+                    }
+                    ImGui::TableSetColumnIndex(1); ImGui::Text("%s", proc.name.c_str());
+                    ImGui::TableSetColumnIndex(2); ImGui::Text("%s", proc.state.c_str());
+                    ImGui::TableSetColumnIndex(3); ImGui::Text("%.2f", proc.cpuUsage);
+                    ImGui::TableSetColumnIndex(4); ImGui::Text("%.2f", proc.memUsage);
+                }
+                ImGui::EndTable();
+            }
+            ImGui::Text("Selected processes: %d", (int)selectedPIDs.size());
+            ImGui::EndTabItem();
         }
-
-        ImGui::EndTable();
+        // Future tabs can be added here
+        ImGui::EndTabBar();
     }
 
     ImGui::End();
@@ -232,8 +275,99 @@ void networkWindow(const char *id, ImVec2 size, ImVec2 position)
     ImGui::SetWindowSize(id, size);
     ImGui::SetWindowPos(id, position);
 
-    // TODO: Add network monitoring here
-
+    auto stats = getNetworkStats();
+    auto ipv4s = getIPv4Addresses();
+    if (ImGui::BeginTabBar("NetworkTabs")) {
+        if (ImGui::BeginTabItem("RX (Network Receiver)")) {
+            if (ImGui::BeginTable("RXTable", 10, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable)) {
+                ImGui::TableSetupColumn("Interface");
+                ImGui::TableSetupColumn("IPv4");
+                ImGui::TableSetupColumn("Bytes");
+                ImGui::TableSetupColumn("Packets");
+                ImGui::TableSetupColumn("Errs");
+                ImGui::TableSetupColumn("Drop");
+                ImGui::TableSetupColumn("Fifo");
+                ImGui::TableSetupColumn("Frame");
+                ImGui::TableSetupColumn("Compressed");
+                ImGui::TableSetupColumn("Multicast");
+                ImGui::TableHeadersRow();
+                for (const auto& [iface, ns] : stats) {
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0); ImGui::Text("%s", iface.c_str());
+                    ImGui::TableSetColumnIndex(1); ImGui::Text("%s", ipv4s.count(iface) ? ipv4s[iface].c_str() : "-");
+                    ImGui::TableSetColumnIndex(2); ImGui::Text("%lld", (long long)ns.rx.bytes);
+                    ImGui::TableSetColumnIndex(3); ImGui::Text("%d", ns.rx.packets);
+                    ImGui::TableSetColumnIndex(4); ImGui::Text("%d", ns.rx.errs);
+                    ImGui::TableSetColumnIndex(5); ImGui::Text("%d", ns.rx.drop);
+                    ImGui::TableSetColumnIndex(6); ImGui::Text("%d", ns.rx.fifo);
+                    ImGui::TableSetColumnIndex(7); ImGui::Text("%d", ns.rx.frame);
+                    ImGui::TableSetColumnIndex(8); ImGui::Text("%d", ns.rx.compressed);
+                    ImGui::TableSetColumnIndex(9); ImGui::Text("%d", ns.rx.multicast);
+                }
+                ImGui::EndTable();
+            }
+            ImGui::Separator();
+            ImGui::Text("RX Usage (0-2GB):");
+            for (const auto& [iface, ns] : stats) {
+                float rxGB = ns.rx.bytes / (1024.0f * 1024.0f * 1024.0f);
+                float rxMB = ns.rx.bytes / (1024.0f * 1024.0f);
+                float rxKB = ns.rx.bytes / 1024.0f;
+                std::string rxStr;
+                if (rxGB >= 1.0f) rxStr = std::to_string(rxGB) + " GB";
+                else if (rxMB >= 1.0f) rxStr = std::to_string(rxMB) + " MB";
+                else rxStr = std::to_string(rxKB) + " KB";
+                float rxRatio = std::min((float)(ns.rx.bytes / (2.0f * 1024 * 1024 * 1024)), 1.0f);
+                ImGui::Text("%s: %s", iface.c_str(), rxStr.c_str());
+                ImGui::ProgressBar(rxRatio, ImVec2(-1.0f, 18.0f));
+            }
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("TX (Network Transmitter)")) {
+            if (ImGui::BeginTable("TXTable", 10, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable)) {
+                ImGui::TableSetupColumn("Interface");
+                ImGui::TableSetupColumn("IPv4");
+                ImGui::TableSetupColumn("Bytes");
+                ImGui::TableSetupColumn("Packets");
+                ImGui::TableSetupColumn("Errs");
+                ImGui::TableSetupColumn("Drop");
+                ImGui::TableSetupColumn("Fifo");
+                ImGui::TableSetupColumn("Colls");
+                ImGui::TableSetupColumn("Carrier");
+                ImGui::TableSetupColumn("Compressed");
+                ImGui::TableHeadersRow();
+                for (const auto& [iface, ns] : stats) {
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0); ImGui::Text("%s", iface.c_str());
+                    ImGui::TableSetColumnIndex(1); ImGui::Text("%s", ipv4s.count(iface) ? ipv4s[iface].c_str() : "-");
+                    ImGui::TableSetColumnIndex(2); ImGui::Text("%lld", (long long)ns.tx.bytes);
+                    ImGui::TableSetColumnIndex(3); ImGui::Text("%d", ns.tx.packets);
+                    ImGui::TableSetColumnIndex(4); ImGui::Text("%d", ns.tx.errs);
+                    ImGui::TableSetColumnIndex(5); ImGui::Text("%d", ns.tx.drop);
+                    ImGui::TableSetColumnIndex(6); ImGui::Text("%d", ns.tx.fifo);
+                    ImGui::TableSetColumnIndex(7); ImGui::Text("%d", ns.tx.colls);
+                    ImGui::TableSetColumnIndex(8); ImGui::Text("%d", ns.tx.carrier);
+                    ImGui::TableSetColumnIndex(9); ImGui::Text("%d", ns.tx.compressed);
+                }
+                ImGui::EndTable();
+            }
+            ImGui::Separator();
+            ImGui::Text("TX Usage (0-2GB):");
+            for (const auto& [iface, ns] : stats) {
+                float txGB = ns.tx.bytes / (1024.0f * 1024.0f * 1024.0f);
+                float txMB = ns.tx.bytes / (1024.0f * 1024.0f);
+                float txKB = ns.tx.bytes / 1024.0f;
+                std::string txStr;
+                if (txGB >= 1.0f) txStr = std::to_string(txGB) + " GB";
+                else if (txMB >= 1.0f) txStr = std::to_string(txMB) + " MB";
+                else txStr = std::to_string(txKB) + " KB";
+                float txRatio = std::min((float)(ns.tx.bytes / (2.0f * 1024 * 1024 * 1024)), 1.0f);
+                ImGui::Text("%s: %s", iface.c_str(), txStr.c_str());
+                ImGui::ProgressBar(txRatio, ImVec2(-1.0f, 18.0f));
+            }
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
     ImGui::End();
 }
 
@@ -316,7 +450,7 @@ int main(int, char **)
                               ImVec2((mainDisplay.x / 2) - 20, (mainDisplay.y / 2) + 30),
                               ImVec2((mainDisplay.x / 2) + 10, 10));
 
-        systemWindow("== System ==",
+        systemWindow("== System Monitor ==",
                      ImVec2((mainDisplay.x / 2) - 10, (mainDisplay.y / 2) + 30),
                      ImVec2(10, 10));
 

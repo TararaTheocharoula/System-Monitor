@@ -74,9 +74,9 @@ struct Networks
     vector<IP4> ip4s;
 };
 
-struct TX
+struct RX
 {
-    int bytes;
+    long long bytes;
     int packets;
     int errs;
     int drop;
@@ -86,9 +86,9 @@ struct TX
     int multicast;
 };
 
-struct RX
+struct TX
 {
-    int bytes;
+    long long bytes;
     int packets;
     int errs;
     int drop;
@@ -96,6 +96,16 @@ struct RX
     int colls;
     int carrier;
     int compressed;
+};
+
+struct NetStats {
+    RX rx;
+    TX tx;
+};
+
+struct DiskStats {
+    float totalGB = 0.0f;
+    float usedGB = 0.0f;
 };
 
 // student TODO : system stats
@@ -111,5 +121,10 @@ std::string getUserName();
 std::string getHostName(); 
 std::string getCPUModel();
 
+std::map<std::string, NetStats> getNetworkStats();
+
+std::map<std::string, std::string> getIPv4Addresses();
+
+DiskStats getDiskStats();
 
 #endif
